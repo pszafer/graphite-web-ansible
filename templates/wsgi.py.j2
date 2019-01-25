@@ -1,0 +1,5 @@
+# {{ graphite_path }}conf/wsgi.py
+
+import sys
+sys.path.append('{{ graphite_path }}/webapp')
+from graphite.wsgi import application

@@ -1,0 +1,9 @@
+[uwsgi]
+processes = 2
+socket = localhost:8080
+gid = nginx
+uid = nginx
+virtualenv = {{ graphite_path }}
+chdir = {{ graphite_path }}/conf
+module = wsgi:application
+plugins = python3

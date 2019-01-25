@@ -1,0 +1,174 @@
+---
+
+- name: Install deps
+  apk:
+    name: "{{ item }}"
+    state: latest
+    update_cache: yes
+  loop:
+    - nginx
+    - cairo
+    - librrd
+    - memcached
+    - nodejs
+    - npm
+    - py3-pyldap
+    - runit
+    - sqlite
+    - expect
+    - alpine-sdk
+    - git
+    - libffi-dev
+    - pkgconfig
+    - py3-cairo
+    - py-cairo
+    - py3-pip
+    - py3-pyldap
+    - py3-virtualenv
+    - py-rrd
+    - python3-dev
+    - rrdtool-dev
+    - wget
+    - uwsgi-python3
+    - ttf-dejavu
+    - font-noto
+  
+- name: Is virtualenv exists
+  stat:
+    path: "{{ graphite_path }}"
+  register: virtualenvexists
+- name: Manually create the initial virtualenv
+  command: "python3 -m venv --system-site-packages {{ graphite_path }}"
+  when: not virtualenvexists.stat.exists
+  
+- name: Upgrade PIP
+  pip:
+    virtualenv: "{{ graphite_path }}"
+    name: pip
+    state: forcereinstall
+
+- name: Install graphite deps
+  pip:
+    virtualenv: "{{ graphite_path }}"
+    name: "{{ item }}"
+    state: latest
+  loop:
+    - django==1.11.15
+    - django-statsd-mozilla
+    - fadvise
+    - msgpack-python
+    - redis
+    - rrdtool
+    - cairocffi
+    - pyparsing
+    - django-tagging
+    - python3-memcached
+    - whitenoise
+    - txamqp
+    - "https://github.com/graphite-project/whisper/tarball/{{ graphite_version }}"
+    
+- name: Install Carbon
+  pip:
+    virtualenv: "{{ graphite_path }}"
+    name: "https://github.com/graphite-project/carbon/tarball/{{ graphite_version }}"
+    extra_args: '--install-option="--prefix={{ graphite_path }}" --install-option="--install-lib={{ graphite_path }}/lib"'
+    state: latest
+
+- name: Install Graphite-Web
+  pip:
+    virtualenv: "{{ graphite_path }}"
+    name: "https://github.com/graphite-project/graphite-web/tarball/{{ graphite_version }}"
+    extra_args: '--install-option="--prefix={{ graphite_path }}" --install-option="--install-lib={{ graphite_path }}/webapp"'
+    state: latest
+
+- name: Run Setup
+  shell: ". {{ graphite_path }}/bin/activate && PYTHONPATH={{ graphite_path }}/webapp {{ graphite_path }}/bin/django-admin.py collectstatic --noinput --settings=graphite.settings"
+  args:
+    chdir: "{{ graphite_path }}"
+
+- name: Run Setup
+  shell: ". {{ graphite_path }}/bin/activate && PYTHONPATH={{ graphite_path }}/webapp {{ graphite_path }}/bin/django-admin.py migrate --settings=graphite.settings --run-syncdb"
+  args:
+    chdir: "{{ graphite_path }}"
+
+- name: Copy configs
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - src: uwsgi.j2
+      dest: /etc/uwsgi/conf.d/graphite.ini
+      mode: "u=rw,g=r,o=r"
+    - src: wsgi.py.j2
+      dest: "{{ graphite_path }}/conf/wsgi.py"
+      mode: "u=rwx,g=rx,o=rx"
+    - src: graphite_nginx.conf.j2
+      dest: /etc/nginx/conf.d/graphite.conf
+      mode: "u=rw,g=r,o=r"
+    - src: graphite_init.j2
+      dest: /etc/init.d/graphite
+      mode: "u=rwx,g=rx,o=rx"
+
+- name: Delete default.conf nginx
+  file:
+    path: /etc/nginx/conf.d/default.conf
+    state: absent
+
+- name: Remove line in uwsgi.ini for LXC to work
+  lineinfile:
+    path: /etc/uwsgi/uwsgi.ini
+    line: 'cap = setgid,setuid'
+    state: absent
+
+- name: Configure UID and GID for Alpine and LXC
+  lineinfile:
+    path: /etc/uwsgi/uwsgi.ini
+    regexp: "^{{ item.property | regex_escape() }}="
+    line: "{{ item.property }}={{ item.value }}"
+  loop:
+    - { property: 'uid', value: 'root' }
+    - { property: 'git', value: 'root' }
+
+- name: Copy carbon.conf and storage-schemas examples
+  copy:
+    remote_src: yes
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+  loop:
+    - src: "{{ graphite_path }}/conf/carbon.conf.example"
+      dest: "{{ graphite_path }}/conf/carbon.conf"
+    - src: "{{ graphite_path }}/conf/storage-schemas.conf.example"
+      dest: "{{ graphite_path }}/conf/storage-schemas.conf"
+
+- name: Copy local_settings
+  copy:
+    remote_src: yes
+    src: "{{ graphite_path }}/webapp/graphite/local_settings.py.example"
+    dest: "{{ graphite_path }}/webapp/graphite/local_settings.py"
+
+- name: Generate random string
+  set_fact:
+    random_secret:  "{{ (999999999999999999999999999999 | random | string + (lookup('pipe', 'date +%s%N'))) | hash('sha512') }}"
+
+- name: Put random in settings
+  lineinfile:
+    path: "{{ graphite_path }}/webapp/graphite/local_settings.py"
+    line: "SECRET_KEY = '{{ random_secret }}'"
+
+- name: Chown log folder
+  file:
+    path: "{{ graphite_path }}/storage"
+    owner: nginx
+    group: nginx
+    recurse: yes
+    
+- name: Start necessary services
+  service:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+  loop:
+    - uwsgi
+    - nginx
+    - graphite

@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# Run Gunicorn in your virtaul env
+# Distributed under the terms of the GNU General Public License v2
+
+USER="nginx"
+PID_DIR="/var/run"
+PID_FILE="$PID_DIR/gunicorn.pid"
+LOG_FILE="/var/log/nginx/gunicorn.log"
+ACTIVATE="{{ graphite_path }}/bin/activate"
+FLAGS="start --pidfile=$PID_FILE"
+EXEC="{{ graphite_path }}/bin/carbon-cache.py"
+
+depend(){
+        need net
+}
+
+start() {
+        ebegin "Starting Carbon Cache"
+        source ${ACTIVATE}
+        start-stop-daemon --start --quiet -p "${PID_FILE}" --exec "${EXEC}" -- $FLAGS
+        eend $?
+}
+
+stop() {
+        ebegin "Stopping Carbon Cache Daemon"
+        start-stop-daemon --stop --quiet --exec "${EXEC}" --pidfile "${PID_FILE}"
+        eend $?
+}
